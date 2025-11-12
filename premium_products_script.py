@@ -9,6 +9,7 @@ import numpy as np
 import connectorx as cx
 from datetime import datetime
 import sys
+from openpyxl.utils import get_column_letter
 
 
 class PremiumProductAnalyzer:
@@ -476,7 +477,7 @@ def main():
             # Sheet 2: Pivot View
             # Prepare pivot data
             pivot_data = df_premium_final.copy()
-            
+            pivot_data['AVG_QTY_SOLD_PER_DAY'] = pivot_data['TOTAL_UNITS'] / 91.0
             # Select relevant columns for pivot view
             pivot_columns = ['MATERIAL_NUMBER', 'TIER1', 'TIER2', 'TIER3', 'TIER4']
             
@@ -488,28 +489,84 @@ def main():
             value_columns = ['AVG_PRICE']
             if 'INVENTORY' in pivot_data.columns:
                 value_columns.append('INVENTORY')
+            if 'ZONE_1_RES_PRICE' in pivot_data.columns:
+                value_columns.append('ZONE_1_RES_PRICE')
             if 'MAX_DAYS_ON_HAND' in pivot_data.columns:
                 value_columns.append('MAX_DAYS_ON_HAND')
             if 'CUSTOMER_COUNT' in pivot_data.columns:
                 value_columns.append('CUSTOMER_COUNT')
+            if 'AVG_QTY_SOLD_PER_DAY' in pivot_data.columns:
+                value_columns.append('AVG_QTY_SOLD_PER_DAY')
                 
             # Combine columns for pivot view
             pivot_view_columns = pivot_columns + value_columns
             pivot_view = pivot_data[pivot_view_columns].copy()
             
+            
             # Sort by TIER1 and then by AVG_PRICE descending within each TIER1
             pivot_view = pivot_view.sort_values(
-                by=['TIER1', 'AVG_PRICE'], 
+                by=['TIER1', 'ZONE_1_RES_PRICE'], 
                 ascending=[True, False]
             )
             
             # Write pivot view to second sheet
             pivot_view.to_excel(writer, sheet_name='Pivot View', index=False)
             
+            # FIXED: Apply grouping to Pivot View sheet
+            print("\nApplying TIER1 grouping to Pivot View...")
+            worksheet = writer.sheets['Pivot View']
+            
+            # Find the groups in the sorted dataframe
+            tier1_groups = []
+            current_tier1 = None
+            start_row = None
+            
+            for idx, (row_position, row) in enumerate(pivot_view.iterrows()):
+                tier1_value = row['TIER1']
+                
+                if tier1_value != current_tier1:
+                    # Save the previous group if it exists
+                    if current_tier1 is not None and start_row is not None:
+                        tier1_groups.append((current_tier1, start_row, idx - 1))
+                    
+                    # Start a new group
+                    current_tier1 = tier1_value
+                    start_row = idx
+            
+            # Don't forget the last group
+            if current_tier1 is not None and start_row is not None:
+                tier1_groups.append((current_tier1, start_row, len(pivot_view) - 1))
+            
+            # Apply grouping to worksheet using proper openpyxl methods
+            # Excel rows are 1-based, and we have a header row, so add 2
+            for tier1_name, df_start_pos, df_end_pos in tier1_groups:
+                # Convert to Excel row numbers (add 2: +1 for header, +1 for 1-based indexing)
+                excel_start = df_start_pos + 2
+                excel_end = df_end_pos + 2
+                
+                # Set outline level for each row in the group
+                # We skip the first row of each group (the summary row) and group the rest
+                if excel_end > excel_start:  # Only group if there's more than one row
+                    for row_num in range(excel_start + 1, excel_end + 1):
+                        worksheet.row_dimensions[row_num].outlineLevel = 1
+                        worksheet.row_dimensions[row_num].hidden = True  # Collapse the group
+                
+                print(f"  Grouped {tier1_name}: rows {excel_start}-{excel_end} ({df_end_pos - df_start_pos + 1} items)")
+            
+            # Set outline properties
+            # summaryBelow = False means the summary row is above the detail rows
+            worksheet.sheet_properties.outlinePr.summaryBelow = False
+            worksheet.sheet_properties.outlinePr.showOutlineSymbols = True
+            
+            # Optional: Set the outline level view (show level 1 only, hiding level 2)
+            worksheet.sheet_properties.outlinePr.summaryRight = False
+            
+            print(f"Applied grouping to {len(tier1_groups)} TIER1 categories")
+            
             # Add a summary sheet with statistics by TIER1
             summary_by_tier1 = df_premium_final.groupby('TIER1').agg({
                 'MATERIAL_NUMBER': 'count',
-                'AVG_PRICE': ['mean', 'median', 'min', 'max']
+                'ZONE_1_RES_PRICE': ['mean', 'median', 'min', 'max']
             }).round(2)
             
             # Flatten column names
@@ -531,7 +588,7 @@ def main():
             
         print(f"\nResults saved to: {output_file}")
         print(f"  - Sheet 1: Raw Data ({len(df_premium_final)} rows)")
-        print(f"  - Sheet 2: Pivot View (sorted by TIER1 and price)")
+        print(f"  - Sheet 2: Pivot View (sorted by TIER1 and price, with collapsible groups)")
         print(f"  - Sheet 3: Summary by TIER1 ({len(summary_by_tier1)} categories)")
         
         # Print summary
